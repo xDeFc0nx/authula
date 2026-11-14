@@ -1,8 +1,10 @@
 package oauth2
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/Authula/authula/plugins/oauth2/constants"
 	"github.com/Authula/authula/plugins/oauth2/services"
 	"github.com/Authula/authula/plugins/oauth2/types"
+	"github.com/Authula/authula/util"
 )
 
 func clearProviderEnv(t *testing.T) {
@@ -23,6 +26,8 @@ func clearProviderEnv(t *testing.T) {
 		env.EnvGithubClientSecret,
 		env.EnvDiscordClientID,
 		env.EnvDiscordClientSecret,
+		env.EnvDropboxClientID,
+		env.EnvDropboxClientSecret,
 		env.EnvMicrosoftClientID,
 		env.EnvMicrosoftClientSecret,
 		env.EnvMicrosoftTenantID,
@@ -199,6 +204,24 @@ func TestRegisterProviders(t *testing.T) {
 			},
 		},
 		{
+			name: "dropbox env credentials",
+			env: map[string]string{
+				env.EnvDropboxClientID:     "env-id",
+				env.EnvDropboxClientSecret: "env-secret",
+			},
+			verify: func(t *testing.T, plugin *OAuth2Plugin) {
+				t.Helper()
+
+				dropbox, ok := plugin.providerRegistry.Get("dropbox")
+				require.True(t, ok)
+				_, ok = dropbox.(*services.DropboxOAuth2Provider)
+				assert.True(t, ok)
+				assert.Equal(t, "env-id", dropbox.GetConfig().ClientID)
+				assert.Equal(t, "https://api.example.com/auth/oauth2/callback/dropbox", dropbox.GetConfig().RedirectURL)
+				assert.Equal(t, []string{"openid", "profile", "email"}, dropbox.GetConfig().Scopes)
+			},
+		},
+		{
 			name: "microsoft env credentials and tenant",
 			env: map[string]string{
 				env.EnvMicrosoftClientID:     "env-id",
@@ -277,6 +300,60 @@ func TestRegisterProviders(t *testing.T) {
 			if tt.verify != nil {
 				tt.verify(t, plugin)
 			}
+		})
+	}
+}
+
+func providerScopesConfigTOML(name, extraConfig string) string {
+	return fmt.Sprintf(`
+[plugins.oauth2.providers.%s]
+client_id = "client-id"
+client_secret = "client-secret"
+scopes = ["openid", "email"]
+%s
+`, name, extraConfig)
+}
+
+func TestProviderScopesFromTOMLConfig(t *testing.T) {
+	clearProviderEnv(t)
+
+	tests := []struct {
+		name        string
+		extraConfig string
+	}{
+		{name: "discord"},
+		{name: "dropbox"},
+		{name: "github"},
+		{name: "google"},
+		{name: "microsoft"},
+		{
+			name: "custom",
+			extraConfig: `redirect_url = "https://app.example.com/callback"
+auth_url = "https://custom.example.com/authorize"
+token_url = "https://custom.example.com/token"
+user_info_url = "https://custom.example.com/userinfo"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var globalConfig models.Config
+			_, err := toml.Decode(providerScopesConfigTOML(tt.name, tt.extraConfig), &globalConfig)
+			require.NoError(t, err)
+
+			var pluginConfig types.OAuth2PluginConfig
+			require.NoError(t, util.LoadPluginConfig(&globalConfig, "oauth2", &pluginConfig))
+
+			providerConfig, ok := pluginConfig.Providers[tt.name]
+			require.True(t, ok)
+			require.Equal(t, []string{"openid", "email"}, providerConfig.Scopes)
+
+			plugin := newRegistrationPlugin(pluginConfig.Providers)
+			require.NoError(t, plugin.registerProviders())
+
+			provider, ok := plugin.providerRegistry.Get(tt.name)
+			require.True(t, ok)
+			require.Equal(t, []string{"openid", "email"}, provider.GetConfig().Scopes)
 		})
 	}
 }
