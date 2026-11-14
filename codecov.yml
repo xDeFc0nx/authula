@@ -1,0 +1,6 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 80%    # The required overall coverage percentage
+        threshold: 1%  # Allowable drop margin before failing the check
